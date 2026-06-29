@@ -18,6 +18,16 @@ class SignalResult:
 
 
 @dataclass
+class CandlePrediction:
+    direction: str          # "UP" or "DOWN"
+    confidence: float       # 0–100
+    predicted_close: float  # estimated next close price
+    predicted_high: float
+    predicted_low: float
+    reason: str             # plain-English explanation
+
+
+@dataclass
 class AnalysisResult:
     symbol: str
     price: float
@@ -26,6 +36,7 @@ class AnalysisResult:
     signals: list[SignalResult]
     trend: str                  # "Bullish" / "Bearish" / "Neutral"
     bars: pd.DataFrame
+    next_candle: CandlePrediction | None = None
 
 
 # ── Indicator helpers ────────────────────────────────────────────────────────
@@ -185,6 +196,93 @@ def score_vwap(bars: pd.DataFrame) -> SignalResult:
 
 # ── Main entry point ─────────────────────────────────────────────────────────
 
+def predict_next_candle(bars: pd.DataFrame) -> CandlePrediction:
+    """
+    Combines short-term momentum signals to predict the next candle's direction.
+    Uses linear regression slope, EMA micro-trend, RSI momentum, MACD histogram
+    acceleration, and recent candle body direction as features.
+    """
+    close = bars["close"]
+    n = min(len(bars), 20)
+    recent = close.iloc[-n:]
+
+    # 1. Linear regression slope over last 10 bars (normalised by price)
+    x = np.arange(len(recent))
+    slope, _ = np.polyfit(x, recent.values, 1)
+    norm_slope = slope / recent.iloc[-1] * 100  # as % per bar
+
+    # 2. Short EMA micro-trend: EMA5 vs EMA10
+    e5 = ema(close, 5).iloc[-1]
+    e10 = ema(close, 10).iloc[-1]
+    ema_micro = (e5 - e10) / e10 * 100
+
+    # 3. RSI momentum: current RSI vs RSI 3 bars ago
+    rsi_vals = rsi(close, 14)
+    rsi_delta = rsi_vals.iloc[-1] - rsi_vals.iloc[-4] if len(rsi_vals) >= 4 else 0
+
+    # 4. MACD histogram: is it expanding or contracting?
+    _, _, hist = macd(close)
+    hist_now = hist.iloc[-1]
+    hist_prev = hist.iloc[-2] if len(hist) >= 2 else 0
+    hist_accel = hist_now - hist_prev
+
+    # 5. Recent candle body direction (last 3 candles)
+    body_sum = (close.iloc[-1] - bars["open"].iloc[-1]) + \
+               (close.iloc[-2] - bars["open"].iloc[-2]) + \
+               (close.iloc[-3] - bars["open"].iloc[-3])
+    body_signal = body_sum / close.iloc[-1] * 100
+
+    # Sanitise intermediate values before combining
+    def safe(v):
+        return 0.0 if (np.isnan(v) or np.isinf(v)) else float(v)
+
+    raw_score = (
+        safe(norm_slope)  * 2.5 +
+        safe(ema_micro)   * 3.0 +
+        safe(rsi_delta)   * 0.3 +
+        safe(hist_accel / close.iloc[-1] * 100) * 2.0 +
+        safe(body_signal) * 1.5
+    )
+
+    # Sigmoid to convert raw score → probability
+    prob_up = 100 / (1 + np.exp(-raw_score * 0.8))
+    prob_up = float(np.clip(prob_up, 5, 95))  # never show 0% or 100%
+
+    direction = "UP" if prob_up >= 50 else "DOWN"
+    confidence = prob_up if direction == "UP" else 100 - prob_up
+
+    # Estimate next candle OHLC using ATR for range
+    price = close.iloc[-1]
+    atr_raw = atr(bars, 14).iloc[-1]
+    atr_val = float(atr_raw) if np.isfinite(atr_raw) and atr_raw > 0 else price * 0.01
+    sign = 1 if direction == "UP" else -1
+    confidence_factor = confidence / 100
+
+    predicted_close = price + sign * atr_val * 0.5 * confidence_factor
+    predicted_high = price + atr_val * (0.7 if direction == "UP" else 0.3)
+    predicted_low = price - atr_val * (0.3 if direction == "UP" else 0.7)
+
+    # Build reason string from dominant signal
+    drivers = {
+        "price momentum": abs(norm_slope),
+        "EMA micro-trend": abs(ema_micro) * 1.2,
+        "RSI shift": abs(rsi_delta) * 0.3,
+        "MACD acceleration": abs(hist_accel / price * 100) * 2,
+        "candle body pattern": abs(body_signal) * 1.5,
+    }
+    dominant = max(drivers, key=drivers.get)
+    reason = f"Driven by {dominant} • {confidence:.0f}% confidence"
+
+    return CandlePrediction(
+        direction=direction,
+        confidence=confidence,
+        predicted_close=round(predicted_close, 2),
+        predicted_high=round(predicted_high, 2),
+        predicted_low=round(predicted_low, 2),
+        reason=reason,
+    )
+
+
 def analyze(symbol: str, bars: pd.DataFrame) -> AnalysisResult:
     """Run all signals and return a combined bullish probability."""
     price = bars["close"].iloc[-1]
@@ -211,6 +309,8 @@ def analyze(symbol: str, bars: pd.DataFrame) -> AnalysisResult:
     else:
         trend = "Neutral"
 
+    next_candle = predict_next_candle(bars) if len(bars) >= 20 else None
+
     return AnalysisResult(
         symbol=symbol,
         price=price,
@@ -219,4 +319,5 @@ def analyze(symbol: str, bars: pd.DataFrame) -> AnalysisResult:
         signals=signals,
         trend=trend,
         bars=bars,
+        next_candle=next_candle,
     )

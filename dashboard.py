@@ -108,6 +108,7 @@ def trend_emoji(trend: str) -> str:
 def render_chart(result):
     bars = result.bars
     close = bars["close"]
+    pred = result.next_candle
 
     e9 = ema(close, 9)
     e21 = ema(close, 21)
@@ -132,6 +133,59 @@ def render_chart(result):
         name="Price", showlegend=False,
     ), row=1, col=1)
 
+    # ── Predicted next candle ──────────────────────────────────────────────
+    if pred is not None:
+        # Estimate the timestamp for the next candle by inferring bar spacing
+        if len(bars.index) >= 2:
+            bar_delta = bars.index[-1] - bars.index[-2]
+        else:
+            bar_delta = pd.Timedelta(minutes=5)
+        next_ts = bars.index[-1] + bar_delta
+
+        candle_color = "#00e676" if pred.direction == "UP" else "#ff1744"
+        current_open = close.iloc[-1]
+
+        fig.add_trace(go.Candlestick(
+            x=[next_ts],
+            open=[current_open],
+            high=[pred.predicted_high],
+            low=[pred.predicted_low],
+            close=[pred.predicted_close],
+            name="Predicted",
+            increasing_line_color=candle_color,
+            increasing_fillcolor=candle_color,
+            decreasing_line_color=candle_color,
+            decreasing_fillcolor=candle_color,
+            opacity=0.55,
+        ), row=1, col=1)
+
+        # Dashed vertical line separating actual from predicted
+        fig.add_vline(
+            x=bars.index[-1].value / 1e6,  # plotly wants ms timestamps
+            line_dash="dash",
+            line_color="rgba(255,255,255,0.25)",
+            row=1, col=1,
+        )
+
+        # Annotation arrow on the predicted candle
+        arrow_color = "#00e676" if pred.direction == "UP" else "#ff1744"
+        arrow_symbol = "▲" if pred.direction == "UP" else "▼"
+        fig.add_annotation(
+            x=next_ts,
+            y=pred.predicted_high if pred.direction == "UP" else pred.predicted_low,
+            text=f"{arrow_symbol} {pred.confidence:.0f}%",
+            showarrow=True,
+            arrowhead=2,
+            arrowcolor=arrow_color,
+            font=dict(color=arrow_color, size=13, family="monospace"),
+            bgcolor="rgba(0,0,0,0.6)",
+            bordercolor=arrow_color,
+            borderwidth=1,
+            ax=0,
+            ay=-30 if pred.direction == "UP" else 30,
+            row=1, col=1,
+        )
+
     # EMAs
     for series, name, color in [(e9, "EMA 9", "#f0a500"), (e21, "EMA 21", "#e05c00"), (e50, "EMA 50", "#9b59b6")]:
         fig.add_trace(go.Scatter(x=bars.index, y=series, name=name,
@@ -154,9 +208,9 @@ def render_chart(result):
     fig.add_hline(y=50, line_dash="dot", line_color="gray", opacity=0.3, row=2, col=1)
 
     # MACD histogram
-    colors = ["#2ecc71" if v >= 0 else "#e74c3c" for v in macd_hist]
+    hist_colors = ["#2ecc71" if v >= 0 else "#e74c3c" for v in macd_hist]
     fig.add_trace(go.Bar(x=bars.index, y=macd_hist, name="MACD Hist",
-                         marker_color=colors, showlegend=False), row=3, col=1)
+                         marker_color=hist_colors, showlegend=False), row=3, col=1)
     fig.add_hline(y=0, line_color="gray", opacity=0.5, row=3, col=1)
 
     fig.update_layout(
@@ -262,7 +316,47 @@ if bars.empty or len(bars) < 30:
 
 result = analyze(symbol, bars)
 
-# Top row: price stats + gauge
+# ── Next-candle prediction banner ────────────────────────────────────────────
+pred = result.next_candle
+if pred is not None:
+    up = pred.direction == "UP"
+    bg = "rgba(0, 180, 80, 0.15)" if up else "rgba(220, 30, 60, 0.15)"
+    border = "#00e676" if up else "#ff1744"
+    arrow = "▲" if up else "▼"
+    label = "UP" if up else "DOWN"
+    st.markdown(
+        f"""
+        <div style="
+            background:{bg};
+            border-left: 4px solid {border};
+            border-radius: 6px;
+            padding: 14px 20px;
+            margin-bottom: 16px;
+            display: flex;
+            align-items: center;
+            gap: 24px;
+        ">
+            <span style="font-size:42px; color:{border}; line-height:1">{arrow}</span>
+            <div>
+                <div style="font-size:22px; font-weight:700; color:{border}">
+                    Next candle predicted: {label}
+                </div>
+                <div style="font-size:14px; color:#ccc; margin-top:4px">
+                    {pred.reason} &nbsp;|&nbsp;
+                    Target close: <b>${pred.predicted_close:.2f}</b> &nbsp;|&nbsp;
+                    Range: ${pred.predicted_low:.2f} – ${pred.predicted_high:.2f}
+                </div>
+            </div>
+            <div style="margin-left:auto; text-align:center">
+                <div style="font-size:34px; font-weight:800; color:{border}">{pred.confidence:.0f}%</div>
+                <div style="font-size:12px; color:#aaa">confidence</div>
+            </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+# ── Top row: price stats + gauge ─────────────────────────────────────────────
 col_price, col_gauge = st.columns([2, 1])
 
 with col_price:
