@@ -62,12 +62,28 @@ with st.sidebar:
 
 @st.cache_data(ttl=60)
 def fetch_bars(sym: str, period: str, interval: str) -> pd.DataFrame:
-    ticker = yf.Ticker(sym)
-    df = ticker.history(period=period, interval=interval)
+    try:
+        df = yf.download(
+            sym,
+            period=period,
+            interval=interval,
+            auto_adjust=True,
+            progress=False,
+        )
+    except Exception as e:
+        st.warning(f"Download error for {sym}: {e}")
+        return pd.DataFrame()
+
     if df.empty:
         return df
+
+    # yf.download returns MultiIndex columns when downloading a single ticker
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = df.columns.get_level_values(0)
+
     df.columns = [c.lower() for c in df.columns]
-    df = df[["open", "high", "low", "close", "volume"]].dropna()
+    needed = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
+    df = df[needed].dropna()
     return df
 
 
