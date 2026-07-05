@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "Stock Trend Overlay for Yahoo Finance",
+  "version": "1.0.0",
+  "description": "Live trend analysis and next-candle direction prediction overlaid on Yahoo Finance charts. Informational only — not financial advice.",
+  "permissions": [],
+  "host_permissions": [
+    "https://query1.finance.yahoo.com/*",
+    "https://query2.finance.yahoo.com/*"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://finance.yahoo.com/*"],
+      "js": ["indicators.js", "content.js"],
+      "css": ["overlay.css"],
+      "run_at": "document_idle"
+    }
+  ]
+}

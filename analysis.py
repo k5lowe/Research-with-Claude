@@ -299,12 +299,23 @@ def analyze(symbol: str, bars: pd.DataFrame) -> AnalysisResult:
     ]
     signals = [fn(bars) for fn in scorers]
 
+    # Regime adjustment: in a strong trend, mean-reversion signals (RSI,
+    # Bollinger) that oppose the trend get dampened toward neutral — otherwise
+    # "oversold = bullish" cancels a clear downtrend and the ensemble reads
+    # as a useless ~50%.
+    trend_bias = (signals[0].score - 50) / 50  # EMA Trend, -1..1
+    if abs(trend_bias) > 0.6:
+        for s in signals:
+            if s.name in ("RSI", "Bollinger Bands") and (s.score - 50) * trend_bias < 0:
+                s.score = 50 + (s.score - 50) * 0.4
+                s.label += " (dampened: strong trend)"
+
     total_weight = sum(s.weight for s in signals)
     probability = sum(s.score * s.weight for s in signals) / total_weight
 
-    if probability >= 60:
+    if probability >= 57:
         trend = "Bullish"
-    elif probability <= 40:
+    elif probability <= 43:
         trend = "Bearish"
     else:
         trend = "Neutral"
